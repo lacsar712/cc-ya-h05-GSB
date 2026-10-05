@@ -341,8 +341,8 @@ export class YawAlignApp extends LitElement {
               (row) => html`
                 <tr>
                   <td>${row.id}</td>
-                  <td>${row.yaw_err_deg}</td>{/* h05-trap-cols */}
                   <td>${row.turbine_code}</td>
+                  <td>${row.yaw_err_deg}</td>
                   <td>
                     <span class="tag ${row.status === "pending" ? "pending" : "ok"}">
                       ${row.status === "pending" ? "待处理" : "已完成"}

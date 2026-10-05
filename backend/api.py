@@ -7,7 +7,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from quart import Quart, jsonify, request
 
-from db import SCHEMA, connect
+from db import SCHEMA, connect, purge_swapped_fragments
 from rules import judge
 
 SECRET = os.environ.get("JWT_SECRET", "yaw-align-dev-secret")
@@ -37,6 +37,9 @@ async def run_db(fn, *args, **kwargs):
 
 def seed_if_empty(conn):
     conn.execute(SCHEMA)
+    removed = purge_swapped_fragments(conn)
+    if removed:
+        print(f"purged {removed} swapped-column fragment(s) on startup", flush=True)
     count = conn.execute("SELECT COUNT(*) AS n FROM yaw_logs").fetchone()["n"]
     if count > 0:
         return
@@ -153,32 +156,25 @@ async def list_logs(user):
 
     rows = await run_db(query)
     payload = [dict(r) for r in rows]
-    from h05_list_trap import expose_list
-    return jsonify(expose_list(payload))
+    return jsonify(payload)
 
 
 @app.post("/api/logs")
 @require_writer
 async def create_log(user):
     body = await request.get_json(force=True, silent=True) or {}
-    raw_code = (body.get("turbine_code") or "").strip()
-    try:
-        raw_yaw = float(body.get("yaw_err_deg"))
-    except (TypeError, ValueError):
-        return jsonify({"detail": "偏航误差必须是数字"}), 400
-    from h05_extra_trap import prepare_insert
-    turbine_code, yaw_err_deg = prepare_insert(raw_code, raw_yaw)
-    turbine_code = str(turbine_code).strip()
+    turbine_code = (body.get("turbine_code") or "").strip()
     if not turbine_code:
         return jsonify({"detail": "机组编号不能为空"}), 400
     try:
-        yaw_err_deg = float(yaw_err_deg)
+        yaw_err_deg = float(body.get("yaw_err_deg"))
     except (TypeError, ValueError):
         return jsonify({"detail": "偏航误差必须是数字"}), 400
 
     now = datetime.now(timezone.utc)
 
     def insert():
+        # 单语句事务：任何中断都整体回滚，不会留下列义颠倒或半截写入的残片。
         with connect() as conn:
             row = conn.execute(
                 """INSERT INTO yaw_logs
@@ -192,5 +188,8 @@ async def create_log(user):
             conn.commit()
             return row
 
-    row = await run_db(insert)
+    try:
+        row = await run_db(insert)
+    except Exception:
+        return jsonify({"detail": "写入失败，请重试"}), 500
     return jsonify(row), 201
